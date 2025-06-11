@@ -1,9 +1,5 @@
 package eu.kanade.tachiyomi.animeextension.en.blzone
 
-import android.app.Application
-import androidx.preference.ListPreference
-import androidx.preference.PreferenceScreen
-import eu.kanade.tachiyomi.animesource.ConfigurableAnimeSource
 import eu.kanade.tachiyomi.animesource.model.AnimeFilter
 import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
 import eu.kanade.tachiyomi.animesource.model.AnimesPage
@@ -22,43 +18,13 @@ import okhttp3.Request
 import okhttp3.Response
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
-import uy.kohesive.injekt.Injekt
-import uy.kohesive.injekt.api.get
 
-class BLZone : ConfigurableAnimeSource, AnimeHttpSource() {
+class BLZone : AnimeHttpSource() {
 
     override val name = "BLZone"
     override val baseUrl = "https://blzone.net"
     override val lang = "en"
     override val supportsLatest = true
-
-    // ---- Preferences ----
-    private val preferences by lazy {
-        Injekt.get<Application>().getSharedPreferences("source_$id", 0x0000)
-    }
-
-    companion object {
-        private const val PREF_SERVER_KEY = "preferred_server"
-        private const val PREF_SERVER_TITLE = "Preferred Server"
-        private val PREF_SERVER_ENTRIES = arrayOf(
-            "Filemoon", "Streamtape", "MixDrop", "VidGuard", "Upnshare", "P2P",
-        )
-        private val PREF_SERVER_VALUES = arrayOf(
-            "filemoon", "streamtape", "mixdrop", "vidguard", "upnshare", "p2p",
-        )
-        private const val PREF_SERVER_DEFAULT = "filemoon"
-    }
-
-    override fun setupPreferenceScreen(screen: PreferenceScreen) {
-        ListPreference(screen.context).apply {
-            key = PREF_SERVER_KEY
-            title = PREF_SERVER_TITLE
-            entries = PREF_SERVER_ENTRIES
-            entryValues = PREF_SERVER_VALUES
-            setDefaultValue(PREF_SERVER_DEFAULT)
-            summary = "%s"
-        }.also(screen::addPreference)
-    }
 
     // ---- FILTERS ----
     private enum class Type(val path: String, val display: String) {
@@ -205,21 +171,24 @@ class BLZone : ConfigurableAnimeSource, AnimeHttpSource() {
     // ---- VIDEO LIST PARSE ----
     override fun videoListParse(response: Response): List<Video> {
         val document = response.asJsoup()
+        val supportedServers = setOf("filemoon", "streamtape", "mixdrop", "vidguard")
         val serverNames = document.select("#playeroptionsul li span.title").map { it.text().trim().lowercase() }
         val serverBoxes = document.select(".dooplay_player .source-box").drop(1)
 
         val videos = mutableListOf<Video>()
         serverBoxes.forEachIndexed { index, box ->
+            val serverName = serverNames.getOrNull(index) ?: "server${index + 1}"
+            if (serverName !in supportedServers) return@forEachIndexed
+
             val iframe = box.selectFirst("iframe.metaframe")
             val src = iframe?.attr("src")?.trim().orEmpty()
             if (src.isBlank()) return@forEachIndexed
-            val name = serverNames.getOrNull(index) ?: "server${index + 1}"
             val videoUrl = if (src.contains("/diclaimer/?url=")) {
                 java.net.URLDecoder.decode(src.substringAfter("/diclaimer/?url="), "UTF-8")
             } else {
                 src
             }
-            videos += Video(videoUrl, name, videoUrl)
+            videos += Video(videoUrl, serverName, videoUrl)
         }
         return videos
     }
@@ -238,21 +207,9 @@ class BLZone : ConfigurableAnimeSource, AnimeHttpSource() {
                 url.contains("streamtape") -> extractedVideos += streamtapeExtractor.videosFromUrl(url)
                 url.contains("mixdrop") -> extractedVideos += mixDropExtractor.videosFromUrl(url)
                 url.contains("vgembed") || videoName.contains("vidguard") -> extractedVideos += vidGuardExtractor.videosFromUrl(url)
-                // upnshare: only add if it is a direct mp4 link (as fallback, not as a primary server)
-                (videoName.contains("upnshare") || url.contains("upns")) && url.endsWith(".mp4") -> extractedVideos += Video(url, "Upnshare", url)
-                videoName.contains("p2p") || url.contains("p2p") -> extractedVideos += Video(url, "P2P", url)
                 else -> extractedVideos += Video(url, video.quality.replaceFirstChar { it.uppercase() }, url)
             }
         }
-        // Always enforce priority order: filemoon > vidguard > rest
-        return extractedVideos.sortedWith(
-            compareByDescending<Video> {
-                when {
-                    it.quality.lowercase().contains("filemoon") -> 2
-                    it.quality.lowercase().contains("vidguard") -> 1
-                    else -> 0
-                }
-            },
-        )
+        return extractedVideos
     }
 }
